@@ -25,11 +25,12 @@ struct Vec3f{
     Vec3f operator^(const Vec3f& v) const{
         return Vec3f(y * v.z - z * v.y, z * v.x - x * v.z, x * v.y - y * v.x);
     }
-    void normalize(){
+    Vec3f normalize(){
         float norm = sqrt(x * x + y * y + z * z);
         x /= norm;
         y /= norm;
         z /= norm;
+        return *this;
     }
     float operator*(const Vec3f& v) const{
         return x * v.x + y * v.y + z * v.z;
@@ -45,6 +46,50 @@ struct Vec3f{
 }
 
 };
+
+struct Matrix4x4 {
+    float m[4][4] = {0};
+
+    static Matrix4x4 identity() {
+        Matrix4x4 result;
+        for (int i = 0; i < 4; ++i) {
+            result.m[i][i] = 1.0f;
+        }
+        return result;
+    }
+
+    Matrix4x4 operator*(const Matrix4x4& other) const {
+        Matrix4x4 result;
+        for (int i = 0; i < 4; ++i) {
+            for (int j = 0; j < 4; ++j) {
+                for (int k = 0; k < 4; ++k) {
+                    result.m[i][j] += m[i][k] * other.m[k][j];
+                }
+            }
+        }
+        return result;
+    }
+
+    Vec3f operator*(const Vec3f& v) const {
+        Vec3f result;
+        float w;
+        result.x = m[0][0] * v.x + m[0][1] * v.y + m[0][2] * v.z + m[0][3];
+        result.y = m[1][0] * v.x + m[1][1] * v.y + m[1][2] * v.z + m[1][3];
+        result.z = m[2][0] * v.x + m[2][1] * v.y + m[2][2] * v.z + m[2][3];
+        w = m[3][0] * v.x + m[3][1] * v.y + m[3][2] * v.z + m[3][3];
+
+        if (w != 1 && w != 0) {
+            result.x /= w;
+            result.y /= w;
+            result.z /= w;
+        }
+
+        return result;
+    }
+};
+
+
+
 
 struct Vertex {
     float x, y, z;
@@ -261,32 +306,78 @@ public:
     }
 };
 
+struct Camera{
+    Vec3f position;
+    Vec3f direction;
+    Vec3f up;
+    float angle;
+
+    Camera(Vec3f position, Vec3f direction, Vec3f up, float angle) : position(position), direction(direction), up(up), angle(angle) {}
+
+    Matrix4x4 getViewMatrix() {
+        Vec3f zAxis = direction.normalize();
+        Vec3f xAxis = (up ^ zAxis).normalize();
+        Vec3f yAxis = zAxis ^ xAxis;
+
+        Matrix4x4 view = Matrix4x4::identity();
+        view.m[0][0] = xAxis.x; view.m[0][1] = xAxis.y; view.m[0][2] = xAxis.z; view.m[0][3] = -(xAxis * position);
+        view.m[1][0] = yAxis.x; view.m[1][1] = yAxis.y; view.m[1][2] = yAxis.z; view.m[1][3] = -(yAxis * position);
+        view.m[2][0] = zAxis.x; view.m[2][1] = zAxis.y; view.m[2][2] = zAxis.z; view.m[2][3] = -(zAxis * position);
+        return view;
+    }
+
+    Matrix4x4 getProjectionMatrix(float aspectRatio) const {
+        Matrix4x4 projection = Matrix4x4::identity();
+        float near = 0.1f;
+        float far = 1000.0f;
+        float fov = 1.0f / tan(angle * 0.5 * M_PI / 180);
+        projection.m[0][0] = fov / aspectRatio;
+        projection.m[1][1] = fov;
+        projection.m[2][2] = -(far + near) / (far - near);
+        projection.m[2][3] = -2 * far * near / (far - near);
+        projection.m[3][2] = -1;
+        projection.m[3][3] = 0;
+
+        return projection;
+    }
+
+
+};
 
 int main() {
     STLReader reader("CircleofWillis_clipped.stl");
     reader.normalize();
     const auto& facets = reader.getFacets();
-    for (const auto& facet : facets) {
-        //std::cout << "Normal: " << facet.normal.x << ", " << facet.normal.y << ", " << facet.normal.z << std::endl;
-        for (int i = 0; i < 3; ++i) {
-            //std::cout << "Vertex " << i << ": " << facet.vertices[i].x << ", " << facet.vertices[i].y << ", " << facet.vertices[i].z << std::endl;
-        }
-    }
+    Camera camera(Vec3f(0, 0, 1), Vec3f(0, 0, -1), Vec3f(0, 1, 0), 90);
 
     int width = 800;
     int height = 800;
+
+    Matrix4x4 view = camera.getViewMatrix();
+    Matrix4x4 projection = camera.getProjectionMatrix((float)width / height);
+    Matrix4x4 transform = projection * view;
+
     FrameBuffer framebuffer(width, height);
     ZBuffer zbuffer(width, height);
     // Draw the facets
     for (const auto& facet : facets) {
         Vec3f screen_coords[3];
+        Vec3f camera_coords[3];
         Vec3f world_coords[3];
         for (int i = 0; i < 3; ++i) {
-            screen_coords[i].x = (facet.vertices[i].x + 1) * width / 2;
-            screen_coords[i].y = (facet.vertices[i].y + 1) * height / 2;
-            world_coords[i] = Vec3f((facet.vertices[i].x+1)/2*width, (facet.vertices[i].y+1)/2*height, facet.vertices[i].z);
+            // 模型空间 -> 世界空间
+            world_coords[i] = Vec3f(facet.vertices[i].x, facet.vertices[i].y, facet.vertices[i].z);
+            // print world_coords
+            //std::cout << "world_coords[" << i << "]: " << world_coords[i].x << " " << world_coords[i].y << " " << world_coords[i].z << std::endl;
+            camera_coords[i] = view * world_coords[i];
+
+            screen_coords[i] = transform * world_coords[i];
+            screen_coords[i].x = (screen_coords[i].x + 1) * width / 2;
+            screen_coords[i].y = (screen_coords[i].y + 1) * height / 2;
+            // print screen_coords
+            //std::cout << "screen_coords[" << i << "]: " << screen_coords[i].x << " " << screen_coords[i].y << " " << screen_coords[i].z << std::endl;
         }
-        Vec3f n = (world_coords[2] - world_coords[0]) ^ (world_coords[1] - world_coords[0]);
+        Vec3f n = (camera_coords[2] - camera_coords[0]) ^ (camera_coords[1] - camera_coords[0]);
         n.normalize();
         float intensity = n * Vec3f(0, 0, -1);
         // Draw the edges
@@ -294,10 +385,10 @@ int main() {
         Vec2f bboxmin(std::numeric_limits<float>::max(), std::numeric_limits<float>::max());
         Vec2f bboxmax(std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest());
         for(int i = 0; i < 3; i++){
-            bboxmin.x = std::min(bboxmin.x, world_coords[i].x);
-            bboxmin.y = std::min(bboxmin.y, world_coords[i].y);
-            bboxmax.x = std::max(bboxmax.x, world_coords[i].x);
-            bboxmax.y = std::max(bboxmax.y, world_coords[i].y);
+            bboxmin.x = std::min(bboxmin.x, screen_coords[i].x);
+            bboxmin.y = std::min(bboxmin.y, screen_coords[i].y);
+            bboxmax.x = std::max(bboxmax.x, screen_coords[i].x);
+            bboxmax.y = std::max(bboxmax.y, screen_coords[i].y);
         }
         Vec3f P;
         for(P.x=bboxmin.x; P.x<=bboxmax.x; P.x++) {
@@ -306,7 +397,7 @@ int main() {
                 if (bc_screen.x<0 || bc_screen.y<0 || bc_screen.z<0) continue;
                 P.z = 0;
                 for(int i = 0; i < 3; i++){
-                    P.z += world_coords[i].z * bc_screen[i];
+                    P.z += camera_coords[i].z * bc_screen[i];
                 }
                 int x = P.x;
                 int y = P.y;
